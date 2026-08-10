@@ -1,0 +1,26 @@
+{
+  "workspacesRoot": "C:\\DEV\\agent-workspaces",
+  "repos": {
+    "frontend": {
+      "path": "C:\\DEV\\Rustkins.Frontend",
+      "description": "Frontend web de Rustkins",
+      "defaultBranch": "develop",
+      "dependsOn": [
+        "backend"
+      ]
+    },
+    "backend": {
+      "path": "C:\\DEV\\Rustkins.Backend",
+      "description": "API et logique métier de Rustkins",
+      "defaultBranch": "develop"
+    },
+    "infra": {
+      "path": "C:\\DEV\\Rustkins.Infrastructure",
+      "description": "Docker, Kubernetes, Helm et infrastructure",
+      "defaultBranch": "main",
+      "dependsOn": [
+        "backend"
+      ]
+    }
+  }
+}
