@@ -70,7 +70,7 @@ function Get-GitStatusSummary {
     param([string]$Path, [string]$DefaultBranch)
     $modified = (& git -C $Path status --porcelain | Measure-Object).Count
     $ahead = "?"; $behind = "?"
-    & git -C $Path rev-parse --verify --quiet $DefaultBranch 2>$null
+    $null = & git -C $Path rev-parse --verify --quiet $DefaultBranch 2>$null
     if ($LASTEXITCODE -eq 0) {
         $counts = & git -C $Path rev-list --left-right --count "$DefaultBranch...HEAD" 2>$null
         if ($LASTEXITCODE -eq 0 -and $counts) {
@@ -188,7 +188,9 @@ function New-Workspace {
             Write-Host "Branch : $branchName"
             Write-Host "Target : $worktreePath"
 
-            Invoke-Git -RepoPath $repoPath -Arguments @("fetch", "--all", "--prune")
+            # Updating refs is required before creating the worktree, but pruning
+            # unrelated deleted branches must not prevent workspace creation.
+            Invoke-Git -RepoPath $repoPath -Arguments @("fetch", "--all")
 
             if (Test-BranchExists -RepoPath $repoPath -BranchName $branchName) {
                 Write-Host "La branche existe déjà, réutilisation." -ForegroundColor Yellow
@@ -245,7 +247,7 @@ function Show-Workspaces {
     param($Config)
     $root = $Config.workspacesRoot
     if (-not (Test-Path $root)) { Write-Host "Aucun workspace."; return }
-    $items = Get-ChildItem $root -Directory | Sort-Object Name
+    $items = @(Get-ChildItem $root -Directory | Sort-Object Name)
     if ($items.Count -eq 0) { Write-Host "Aucun workspace."; return }
     $rows = foreach ($item in $items) {
         $manifestPath = Join-Path $item.FullName ".workspace.json"
@@ -264,7 +266,7 @@ function Show-WorkspaceStatus {
     param($Config, [string]$Name)
     $workspacePath = Get-WorkspacePath -Config $Config -Name $Name
     if (-not (Test-Path $workspacePath)) { throw "Workspace introuvable : $Name" }
-    $repos = Get-WorkspaceRepos -WorkspacePath $workspacePath
+    $repos = @(Get-WorkspaceRepos -WorkspacePath $workspacePath)
     if ($repos.Count -eq 0) { throw "Manifest .workspace.json introuvable ou vide dans '$workspacePath'." }
 
     Write-Host "Workspace: $Name" -ForegroundColor Cyan
@@ -293,7 +295,7 @@ function Remove-Workspace {
     param($Config, [string]$Name)
     $workspacePath = Get-WorkspacePath -Config $Config -Name $Name
     if (-not (Test-Path $workspacePath)) { throw "Workspace introuvable : $Name" }
-    $repos = Get-WorkspaceRepos -WorkspacePath $workspacePath
+    $repos = @(Get-WorkspaceRepos -WorkspacePath $workspacePath)
     if ($repos.Count -eq 0) { throw "Impossible de supprimer proprement le workspace : manifest .workspace.json introuvable." }
 
     foreach ($repo in $repos) {

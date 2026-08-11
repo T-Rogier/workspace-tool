@@ -6,8 +6,21 @@ $ErrorActionPreference = "Stop"
 
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-Copy-Item "$PSScriptRoot\ws.ps1" (Join-Path $InstallDir "ws.ps1") -Force
-Copy-Item "$PSScriptRoot\repos.json" (Join-Path $InstallDir "repos.json") -Force
+# Windows PowerShell 5.1 treats UTF-8 files without a BOM as ANSI.  Re-encode
+# installed text files with a BOM so non-ASCII characters in ws.ps1 remain
+# valid PowerShell syntax regardless of the active Windows code page.
+$utf8WithBom = New-Object System.Text.UTF8Encoding($true)
+$scriptSource = Join-Path $PSScriptRoot "ws.ps1"
+$scriptDestination = Join-Path $InstallDir "ws.ps1"
+$scriptContent = [System.IO.File]::ReadAllText($scriptSource)
+[System.IO.File]::WriteAllText($scriptDestination, $scriptContent, $utf8WithBom)
+
+$configDestination = Join-Path $InstallDir "repos.json"
+if (-not (Test-Path $configDestination)) {
+    $configSource = Join-Path $PSScriptRoot "repos.json"
+    $configContent = [System.IO.File]::ReadAllText($configSource)
+    [System.IO.File]::WriteAllText($configDestination, $configContent, $utf8WithBom)
+}
 
 $profileDir = Split-Path -Parent $PROFILE
 if (-not (Test-Path $profileDir)) {
@@ -26,17 +39,20 @@ function ws {
 "@
 
 $currentProfile = Get-Content $PROFILE -Raw
+if ($null -eq $currentProfile) {
+    $currentProfile = ""
+}
 
 if ($currentProfile -notmatch 'function\s+ws\s*\{') {
     Add-Content $PROFILE $functionBlock
-    Write-Host "Fonction 'ws' ajoutée à ton profil PowerShell." -ForegroundColor Green
+    Write-Host "Fonction 'ws' ajoutee a ton profil PowerShell." -ForegroundColor Green
 }
 else {
-    Write-Host "Une fonction 'ws' existe déjà dans ton profil PowerShell." -ForegroundColor Yellow
+    Write-Host "Une fonction 'ws' existe deja dans ton profil PowerShell." -ForegroundColor Yellow
 }
 
 Write-Host ""
-Write-Host "Installation terminée." -ForegroundColor Green
+Write-Host "Installation terminee." -ForegroundColor Green
 Write-Host "Configuration : $(Join-Path $InstallDir 'repos.json')"
 Write-Host ""
 Write-Host "Recharge ton profil avec :"
