@@ -114,6 +114,14 @@ ws remove feature-auth
 
 Les worktrees sont supprimés, mais les branches `agent/...` sont conservées.
 
+Pour supprimer également les branches locales associées au workspace :
+
+```powershell
+ws remove feature-auth -DeleteBranches
+```
+
+Git refuse cette suppression si une branche contient des commits non fusionnés. Les branches distantes ne sont jamais supprimées.
+
 Si un worktree contient des modifications non commitées, la suppression s'arrête afin d'éviter une perte de données.
 
 ## AGENTS.md

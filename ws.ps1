@@ -7,7 +7,9 @@ param(
     [string]$WorkspaceName,
 
     [Parameter(Position = 2, ValueFromRemainingArguments = $true)]
-    [string[]]$Repositories
+    [string[]]$Repositories,
+
+    [switch]$DeleteBranches
 )
 
 Set-StrictMode -Version Latest
@@ -292,7 +294,7 @@ function Show-WorkspaceStatus {
 }
 
 function Remove-Workspace {
-    param($Config, [string]$Name)
+    param($Config, [string]$Name, [switch]$DeleteBranches)
     $workspacePath = Get-WorkspacePath -Config $Config -Name $Name
     if (-not (Test-Path $workspacePath)) { throw "Workspace introuvable : $Name" }
     $repos = @(Get-WorkspaceRepos -WorkspacePath $workspacePath)
@@ -313,9 +315,24 @@ function Remove-Workspace {
         & git -C $repo.path worktree prune 2>$null
     }
 
+    if ($DeleteBranches) {
+        foreach ($repo in $repos) {
+            $branchName = $repo.branch
+            if (Test-BranchExists -RepoPath $repo.path -BranchName $branchName) {
+                Write-Host "Suppression de la branche locale '$branchName' dans '$($repo.name)'..."
+                Invoke-Git -RepoPath $repo.path -Arguments @("branch", "--delete", $branchName)
+            }
+        }
+    }
+
     if (Test-Path $workspacePath) { Remove-Item $workspacePath -Recurse -Force }
     Write-Host "Workspace '$Name' supprimé." -ForegroundColor Green
-    Write-Host "Les branches Git ont été conservées."
+    if ($DeleteBranches) {
+        Write-Host "Les branches Git locales associées ont été supprimées."
+    }
+    else {
+        Write-Host "Les branches Git ont été conservées."
+    }
 }
 
 $config = Get-Config
@@ -335,7 +352,7 @@ switch ($Command) {
         Show-WorkspaceStatus -Config $config -Name $WorkspaceName
     }
     "remove" {
-        if (-not $WorkspaceName) { throw "Usage : ws remove <workspace>" }
-        Remove-Workspace -Config $config -Name $WorkspaceName
+        if (-not $WorkspaceName) { throw "Usage : ws remove <workspace> [-DeleteBranches]" }
+        Remove-Workspace -Config $config -Name $WorkspaceName -DeleteBranches:$DeleteBranches
     }
 }
