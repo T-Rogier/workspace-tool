@@ -51,7 +51,7 @@ Exemple :
 ## Créer un workspace
 
 ```powershell
-ws create feature-auth frontend backend
+ws create feature-auth frontend backend -BranchType feature
 ```
 
 Crée :
@@ -68,11 +68,21 @@ C:\DEV\agent-workspaces\
 Branches :
 
 ```text
-frontend : develop -> agent/feature-auth
-backend  : develop -> agent/feature-auth
+frontend : develop -> feature/feature-auth
+backend  : develop -> feature/feature-auth
 ```
 
-Si `agent/feature-auth` existe déjà dans un repo, la branche est réutilisée.
+Le type est libre, tant qu'il est compatible avec un préfixe Git :
+
+```powershell
+ws create correction-login frontend backend -BranchType fix
+ws create guide-installation frontend -BranchType docs
+```
+
+Cela crée respectivement les branches `fix/correction-login` et `docs/guide-installation`.
+Sans `-BranchType`, le type par défaut est `feature` : `feature/<workspace>`.
+
+Si la branche existe déjà dans un repo, elle est réutilisée.
 
 ## Ouvrir
 
@@ -112,7 +122,7 @@ Affiche par repository :
 ws remove feature-auth
 ```
 
-Les worktrees sont supprimés, mais les branches `agent/...` sont conservées.
+Les worktrees sont supprimés, mais les branches (`feature/...`, `fix/...`, etc.) sont conservées.
 
 Pour supprimer également les branches locales associées au workspace :
 

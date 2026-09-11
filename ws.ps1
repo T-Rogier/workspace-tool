@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Position = 0, Mandatory = $true)]
     [ValidateSet("create", "open", "list", "status", "remove")]
     [string]$Command,
@@ -8,6 +8,9 @@ param(
 
     [Parameter(Position = 2, ValueFromRemainingArguments = $true)]
     [string[]]$Repositories,
+
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
+    [string]$BranchType = "feature",
 
     [switch]$DeleteBranches
 )
@@ -47,7 +50,16 @@ function Assert-GitRepo {
 }
 
 function Get-WorkspacePath { param($Config, [string]$Name) return (Join-Path $Config.workspacesRoot $Name) }
-function Get-AgentBranch { param([string]$WorkspaceName) return "agent/$WorkspaceName" }
+function Get-WorkspaceBranch {
+    param([string]$WorkspaceName, [string]$BranchType)
+
+    if ([string]::IsNullOrWhiteSpace($WorkspaceName)) { throw "Le nom du workspace ne peut pas etre vide." }
+    if ($WorkspaceName -match '[~^:?*\[\\ ]' -or $WorkspaceName.EndsWith('.') -or $WorkspaceName.EndsWith('/') -or $WorkspaceName.Contains('..')) {
+        throw "Nom de workspace invalide pour une branche Git : '$WorkspaceName'"
+    }
+
+    return "$BranchType/$WorkspaceName"
+}
 
 function Invoke-Git {
     param([string]$RepoPath, [string[]]$Arguments)
@@ -92,10 +104,11 @@ function Get-WorkspaceRepos {
 }
 
 function Write-WorkspaceManifest {
-    param([string]$WorkspacePath, [string]$WorkspaceName, [string]$BranchName, [array]$RepoEntries)
+    param([string]$WorkspacePath, [string]$WorkspaceName, [string]$BranchName, [string]$BranchType, [array]$RepoEntries)
     $manifest = [PSCustomObject]@{
         name = $WorkspaceName
         branch = $BranchName
+        branchType = $BranchType
         createdAt = (Get-Date).ToString("o")
         repositories = $RepoEntries
     }
@@ -167,11 +180,11 @@ function Write-AgentsFile {
 }
 
 function New-Workspace {
-    param($Config, [string]$Name, [string[]]$RepoNames)
-    if (-not $RepoNames -or $RepoNames.Count -eq 0) { throw "Usage : ws create <workspace> <repo1> [repo2] [...]" }
+    param($Config, [string]$Name, [string[]]$RepoNames, [string]$BranchType)
+    if (-not $RepoNames -or $RepoNames.Count -eq 0) { throw "Usage : ws create <workspace> <repo1> [repo2] [...] [-BranchType <type>]" }
     $workspacePath = Get-WorkspacePath -Config $Config -Name $Name
     if (Test-Path $workspacePath) { throw "Le workspace existe déjà : $workspacePath" }
-    $branchName = Get-AgentBranch -WorkspaceName $Name
+    $branchName = Get-WorkspaceBranch -WorkspaceName $Name -BranchType $BranchType
     New-Item -ItemType Directory -Path $workspacePath -Force | Out-Null
     $createdWorktrees = New-Object System.Collections.Generic.List[object]
 
@@ -217,7 +230,7 @@ function New-Workspace {
             }
         }
 
-        Write-WorkspaceManifest -WorkspacePath $workspacePath -WorkspaceName $Name -BranchName $branchName -RepoEntries $repoEntries
+        Write-WorkspaceManifest -WorkspacePath $workspacePath -WorkspaceName $Name -BranchName $branchName -BranchType $BranchType -RepoEntries $repoEntries
         Write-AgentsFile -WorkspacePath $workspacePath -WorkspaceName $Name -RepoEntries $repoEntries
 
         Write-Host ""
@@ -339,8 +352,8 @@ $config = Get-Config
 
 switch ($Command) {
     "create" {
-        if (-not $WorkspaceName) { throw "Usage : ws create <workspace> <repo1> [repo2] [...]" }
-        New-Workspace -Config $config -Name $WorkspaceName -RepoNames $Repositories
+        if (-not $WorkspaceName) { throw "Usage : ws create <workspace> <repo1> [repo2] [...] [-BranchType <type>]" }
+        New-Workspace -Config $config -Name $WorkspaceName -RepoNames $Repositories -BranchType $BranchType
     }
     "open" {
         if (-not $WorkspaceName) { throw "Usage : ws open <workspace>" }
