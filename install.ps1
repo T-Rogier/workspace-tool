@@ -15,11 +15,18 @@ $scriptDestination = Join-Path $InstallDir "ws.ps1"
 $scriptContent = [System.IO.File]::ReadAllText($scriptSource)
 [System.IO.File]::WriteAllText($scriptDestination, $scriptContent, $utf8WithBom)
 
-$configDestination = Join-Path $InstallDir "repos.json"
+$configDestination = Join-Path $InstallDir "config.json"
 if (-not (Test-Path $configDestination)) {
-    $configSource = Join-Path $PSScriptRoot "repos.json"
-    $configContent = [System.IO.File]::ReadAllText($configSource)
-    [System.IO.File]::WriteAllText($configDestination, $configContent, $utf8WithBom)
+    $legacyConfigPath = Join-Path $InstallDir "repos.json"
+    if (Test-Path $legacyConfigPath) {
+        Move-Item -LiteralPath $legacyConfigPath -Destination $configDestination
+        Write-Host "Configuration existante migree vers config.json." -ForegroundColor Green
+    }
+    else {
+        $configSource = Join-Path $PSScriptRoot "config.json"
+        $configContent = [System.IO.File]::ReadAllText($configSource)
+        [System.IO.File]::WriteAllText($configDestination, $configContent, $utf8WithBom)
+    }
 }
 
 $profileDir = Split-Path -Parent $PROFILE
@@ -53,7 +60,7 @@ else {
 
 Write-Host ""
 Write-Host "Installation terminee." -ForegroundColor Green
-Write-Host "Configuration : $(Join-Path $InstallDir 'repos.json')"
+Write-Host "Configuration : $(Join-Path $InstallDir 'config.json')"
 Write-Host ""
 Write-Host "Recharge ton profil avec :"
 Write-Host "  . `$PROFILE"

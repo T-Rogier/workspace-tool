@@ -1,5 +1,11 @@
 {
   "workspacesRoot": "C:\\DEV\\agent-workspaces",
+  "editorOrder": [
+    "code",
+    "cursor",
+    "rider",
+    "explorer"
+  ],
   "repos": {
     "frontend": {
       "path": "C:\\DEV\\Rustkins.Frontend",

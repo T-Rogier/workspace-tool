@@ -14,7 +14,7 @@ L'installation copie l'outil dans :
 ```text
 %USERPROFILE%\.ws\
 ├── ws.ps1
-└── repos.json
+└── config.json
 ```
 
 Puis elle ajoute la fonction `ws` au profil PowerShell.
@@ -24,14 +24,17 @@ Puis elle ajoute la fonction `ws` au profil PowerShell.
 Modifier :
 
 ```text
-%USERPROFILE%\.ws\repos.json
+%USERPROFILE%\.ws\config.json
 ```
+
+Lors d'une mise à jour via `install.ps1`, une ancienne configuration `repos.json` est automatiquement renommée en `config.json`.
 
 Exemple :
 
 ```json
 {
   "workspacesRoot": "C:\\DEV\\agent-workspaces",
+  "editorOrder": ["cursor", "code", "rider", "explorer"],
   "repos": {
     "frontend": {
       "path": "C:\\DEV\\Rustkins.Frontend",
@@ -52,6 +55,12 @@ Exemple :
 
 ```powershell
 ws create feature-auth frontend backend -BranchType feature
+```
+
+Ajoute `-o` pour ouvrir automatiquement le workspace après sa création :
+
+```powershell
+ws create feature-auth frontend backend -o
 ```
 
 Crée :
@@ -90,11 +99,18 @@ Si la branche existe déjà dans un repo, elle est réutilisée.
 ws open feature-auth
 ```
 
-Ordre de préférence :
+L'ordre d'ouverture se règle avec `editorOrder` dans `config.json`. Les valeurs disponibles sont `code`, `cursor`, `rider` et `explorer` ; le premier éditeur disponible est utilisé. Par exemple, pour préférer Cursor :
+
+```json
+"editorOrder": ["cursor", "code", "rider", "explorer"]
+```
+
+Sans cette propriété, l'ordre par défaut est :
 
 1. VS Code si `code` est disponible
-2. Rider si `rider64.exe` est disponible
-3. Explorateur Windows sinon
+2. Cursor si `cursor` est disponible
+3. Rider si `rider64.exe` est disponible
+4. Explorateur Windows sinon
 
 ## Lister
 

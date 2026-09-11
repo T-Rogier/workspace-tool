@@ -12,6 +12,9 @@
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
     [string]$BranchType = "feature",
 
+    [Alias("o")]
+    [switch]$OpenAfterCreate,
+
     [switch]$DeleteBranches
 )
 
@@ -19,13 +22,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ConfigPath = Join-Path $ScriptRoot "repos.json"
+$ConfigPath = Join-Path $ScriptRoot "config.json"
 
 function Get-Config {
     if (-not (Test-Path $ConfigPath)) { throw "Configuration introuvable : $ConfigPath" }
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-    if (-not $config.workspacesRoot) { throw "La propriété 'workspacesRoot' est obligatoire dans repos.json." }
-    if (-not $config.repos) { throw "La propriété 'repos' est obligatoire dans repos.json." }
+    if (-not $config.workspacesRoot) { throw "La propriété 'workspacesRoot' est obligatoire dans config.json." }
+    if (-not $config.repos) { throw "La propriété 'repos' est obligatoire dans config.json." }
     return $config
 }
 
@@ -180,7 +183,7 @@ function Write-AgentsFile {
 }
 
 function New-Workspace {
-    param($Config, [string]$Name, [string[]]$RepoNames, [string]$BranchType)
+    param($Config, [string]$Name, [string[]]$RepoNames, [string]$BranchType, [switch]$OpenAfterCreate)
     if (-not $RepoNames -or $RepoNames.Count -eq 0) { throw "Usage : ws create <workspace> <repo1> [repo2] [...] [-BranchType <type>]" }
     $workspacePath = Get-WorkspacePath -Config $Config -Name $Name
     if (Test-Path $workspacePath) { throw "Le workspace existe déjà : $workspacePath" }
@@ -238,6 +241,10 @@ function New-Workspace {
         Write-Host "  $workspacePath"
         Write-Host ""
         foreach ($repo in $repoEntries) { Write-Host "  $($repo.name) : $($repo.defaultBranch) -> $($repo.branch)" }
+
+        if ($OpenAfterCreate) {
+            Open-Workspace -Config $Config -Name $Name
+        }
     }
     catch {
         Write-Warning "Erreur pendant la création. Nettoyage des worktrees déjà créés..."
@@ -253,9 +260,29 @@ function Open-Workspace {
     param($Config, [string]$Name)
     $workspacePath = Get-WorkspacePath -Config $Config -Name $Name
     if (-not (Test-Path $workspacePath)) { throw "Workspace introuvable : $Name" }
-    if (Get-Command code -ErrorAction SilentlyContinue) { & code $workspacePath }
-    elseif (Get-Command rider64.exe -ErrorAction SilentlyContinue) { & rider64.exe $workspacePath }
-    else { Invoke-Item $workspacePath }
+
+    $editorOrder = @("code", "cursor", "rider", "explorer")
+    if ($Config.PSObject.Properties.Name -contains "editorOrder" -and $Config.editorOrder) {
+        $editorOrder = @($Config.editorOrder)
+    }
+
+    foreach ($editor in $editorOrder) {
+        switch ([string]$editor) {
+            "code" {
+                if (Get-Command code -ErrorAction SilentlyContinue) { & code $workspacePath; return }
+            }
+            "cursor" {
+                if (Get-Command cursor -ErrorAction SilentlyContinue) { & cursor $workspacePath; return }
+            }
+            "rider" {
+                if (Get-Command rider64.exe -ErrorAction SilentlyContinue) { & rider64.exe $workspacePath; return }
+            }
+            "explorer" { Invoke-Item $workspacePath; return }
+            default { throw "Editeur inconnu dans editorOrder : '$editor'. Valeurs acceptees : code, cursor, rider, explorer." }
+        }
+    }
+
+    throw "Aucun editeur configure n'est disponible pour ouvrir '$workspacePath'."
 }
 
 function Show-Workspaces {
@@ -353,7 +380,7 @@ $config = Get-Config
 switch ($Command) {
     "create" {
         if (-not $WorkspaceName) { throw "Usage : ws create <workspace> <repo1> [repo2] [...] [-BranchType <type>]" }
-        New-Workspace -Config $config -Name $WorkspaceName -RepoNames $Repositories -BranchType $BranchType
+        New-Workspace -Config $config -Name $WorkspaceName -RepoNames $Repositories -BranchType $BranchType -OpenAfterCreate:$OpenAfterCreate
     }
     "open" {
         if (-not $WorkspaceName) { throw "Usage : ws open <workspace>" }
