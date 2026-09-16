@@ -93,6 +93,66 @@ Sans `-BranchType`, le type par défaut est `feature` : `feature/<workspace>`.
 
 Si la branche existe déjà dans un repo, elle est réutilisée.
 
+## Scripts post-création
+
+`ws` reste neutre : il crée les worktrees puis exécute uniquement les scripts déclarés dans `postCreate` et `postDelete`. Les variables disponibles sont `{workspaceName}`, `{branchName}`, `{repoName}`, `{worktreePath}`, `{workspacePath}`, `{configPath}` et `{toolPath}`.
+
+Le script fourni `scripts\\New-FeatureIis.ps1` est un exemple de script post-création : il crée les sites IIS et réécrit les `PublishUrl` des profils de publication du worktree. Il est spécifique à cette organisation IIS, pas au fonctionnement de `ws`.
+
+```json
+{
+  "workspacesRoot": "C:\\DEV\\agent-workspaces",
+  "repos": {
+    "web": {
+      "path": "C:\\DEV\\My.Web",
+      "defaultBranch": "develop",
+      "iis": {
+        "sites": [
+          {
+            "name": "web",
+            "templateSite": "web",
+            "publishProfile": "My.Web\\Properties\\PublishProfiles\\FolderProfile.pubxml"
+          }
+        ]
+      },
+      "postCreate": {
+        "script": "{toolPath}\\scripts\\New-FeatureIis.ps1",
+        "arguments": [
+          "-WorkspaceConfig", "{configPath}",
+          "-WorkspaceName", "{workspaceName}",
+          "-RepositoryName", "{repoName}",
+          "-RepositoryPath", "{worktreePath}"
+        ]
+      },
+      "postDelete": {
+        "script": "{toolPath}\\scripts\\New-FeatureIis.ps1",
+        "arguments": [
+          "-WorkspaceConfig", "{configPath}",
+          "-WorkspaceName", "{workspaceName}",
+          "-RepositoryName", "{repoName}",
+          "-RepositoryPath", "{worktreePath}",
+          "-Remove"
+        ]
+      }
+    },
+    "api": {
+      "path": "C:\\DEV\\My.Api",
+      "defaultBranch": "develop",
+      "postCreate": {
+        "script": "scripts\\prepare-local.ps1",
+        "arguments": ["-Workspace", "{workspaceName}"]
+      }
+    }
+  }
+}
+```
+
+Chaque entrée de `iis.sites` doit définir `templateSite`, le nom du site IIS local servant de modèle. Le script clone entièrement ce site : pool applicatif, bindings HTTP/HTTPS, certificat et réglages spécifiques. Il applique le suffixe du workspace au dernier dossier de chaque chemin physique et au premier libellé de chaque nom d'hôte. Ainsi `C:\\inetpub\\wwwroot\\web` devient `C:\\inetpub\\wwwroot\\web-feature-auth`, et `web.dijon.fr` devient `web-feature-auth.dijon.fr`. Le profil indiqué par `publishProfile` est ensuite mis à jour dans le worktree afin que son élément `PublishUrl` cible le chemin cloné.
+
+Les noms d'hôte clonés sont ajoutés au fichier Windows `hosts` sous une entrée marquée `# ws-tool:<workspace>` et pointent vers `127.0.0.1`. Le hook `postDelete` retire uniquement cette entrée, sans modifier les autres lignes du fichier.
+
+La création et la suppression de sites IIS requièrent une console PowerShell lancée en administrateur. Au retrait du workspace, le script IIS supprime les sites et restaure les `publishProfile` avec `git restore` avant que `ws` ne supprime le worktree.
+
 ## Ouvrir
 
 ```powershell

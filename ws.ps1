@@ -45,6 +45,32 @@ function Get-RepoConfig {
     return $repoConfig
 }
 
+function Expand-WorkspaceTemplate {
+    param([string]$Value, $Variables)
+    if ($null -eq $Value) { return $null }
+    foreach ($property in $Variables.PSObject.Properties) {
+        $Value = $Value.Replace("{$($property.Name)}", [string]$property.Value)
+    }
+    return $Value
+}
+
+function Invoke-RepositoryHook {
+    param($RepoConfig, [string]$HookName, $Variables, [string]$WorktreePath, [string]$RepoName)
+    if (-not ($RepoConfig.PSObject.Properties.Name -contains $HookName) -or -not $RepoConfig.$HookName) { return }
+    $hook = $RepoConfig.$HookName
+    if (-not ($hook.PSObject.Properties.Name -contains "script") -or -not $hook.script) { throw "Le repository '$RepoName' a un $HookName sans propriété 'script'." }
+    $scriptPath = Expand-WorkspaceTemplate -Value ([string]$hook.script) -Variables $Variables
+    if (-not [System.IO.Path]::IsPathRooted($scriptPath)) { $scriptPath = Join-Path $WorktreePath $scriptPath }
+    if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "Script postCreate introuvable pour '$RepoName' : $scriptPath" }
+    $arguments = @()
+    if (($hook.PSObject.Properties.Name -contains "arguments") -and $hook.arguments) {
+        $arguments = @($hook.arguments | ForEach-Object { Expand-WorkspaceTemplate -Value ([string]$_) -Variables $Variables })
+    }
+    Write-Host "Exécution $HookName : $scriptPath $($arguments -join ' ')" -ForegroundColor Cyan
+    & $scriptPath @arguments
+    if ($LASTEXITCODE -ne 0) { throw "Le script $HookName du repository '$RepoName' a échoué (code $LASTEXITCODE)." }
+}
+
 function Assert-GitRepo {
     param([string]$Path)
     if (-not (Test-Path $Path)) { throw "Le chemin du repository n'existe pas : $Path" }
@@ -222,6 +248,16 @@ function New-Workspace {
             $dependsOn = @()
             if ($repoConfig.PSObject.Properties.Name -contains "dependsOn" -and $repoConfig.dependsOn) { $dependsOn = @($repoConfig.dependsOn) }
 
+            $templateVariables = [PSCustomObject]@{
+                workspaceName = $Name
+                branchName = $branchName
+                repoName = $repoName
+                worktreePath = $worktreePath
+                configPath = $ConfigPath
+                toolPath = $ScriptRoot
+            }
+            Invoke-RepositoryHook -RepoConfig $repoConfig -HookName "postCreate" -Variables $templateVariables -WorktreePath $worktreePath -RepoName $repoName
+
             $repoEntries += [PSCustomObject]@{
                 name = $repoName
                 path = $repoPath
@@ -339,6 +375,22 @@ function Remove-Workspace {
     if (-not (Test-Path $workspacePath)) { throw "Workspace introuvable : $Name" }
     $repos = @(Get-WorkspaceRepos -WorkspacePath $workspacePath)
     if ($repos.Count -eq 0) { throw "Impossible de supprimer proprement le workspace : manifest .workspace.json introuvable." }
+
+    foreach ($repo in $repos) {
+        $worktreePath = Join-Path $workspacePath $repo.name
+        if (-not (Test-Path $worktreePath)) { continue }
+        $repoConfig = Get-RepoConfig -Config $Config -RepoName $repo.name
+        $templateVariables = [PSCustomObject]@{
+            workspaceName = $Name
+            branchName = $repo.branch
+            repoName = $repo.name
+            worktreePath = $worktreePath
+            workspacePath = $workspacePath
+            configPath = $ConfigPath
+            toolPath = $ScriptRoot
+        }
+        Invoke-RepositoryHook -RepoConfig $repoConfig -HookName "postDelete" -Variables $templateVariables -WorktreePath $worktreePath -RepoName $repo.name
+    }
 
     foreach ($repo in $repos) {
         $worktreePath = Join-Path $workspacePath $repo.name

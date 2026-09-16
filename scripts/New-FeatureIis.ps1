@@ -1,0 +1,234 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$WorkspaceConfig,
+
+    [Parameter(Mandatory = $true)]
+    [string]$WorkspaceName,
+
+    [Parameter(Mandatory = $true)]
+    [string]$RepositoryName,
+
+    [Parameter(Mandatory = $true)]
+    [string]$RepositoryPath,
+
+    [switch]$Remove
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+function Test-Property {
+    param($Object, [string]$Name)
+    return ($null -ne $Object -and $Object.PSObject.Properties.Name -contains $Name)
+}
+
+function Expand-Template {
+    param([string]$Value, $Variables)
+    foreach ($property in $Variables.PSObject.Properties) {
+        $Value = $Value.Replace("{$($property.Name)}", [string]$property.Value)
+    }
+    return $Value
+}
+
+function Set-PublishUrl {
+    param([string]$ProfilePath, [string]$TargetPath)
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.PreserveWhitespace = $true
+    $xml.Load($ProfilePath)
+    $publishUrl = $xml.SelectSingleNode("//*[local-name()='PublishUrl' or local-name()='publishUrl']")
+    if (-not $publishUrl) {
+        $propertyGroup = $xml.SelectSingleNode("//*[local-name()='PropertyGroup']")
+        if (-not $propertyGroup) { throw "PropertyGroup introuvable dans : $ProfilePath" }
+        $publishUrl = $xml.CreateElement("PublishUrl", $xml.DocumentElement.NamespaceURI)
+        $null = $propertyGroup.AppendChild($publishUrl)
+    }
+    $publishUrl.InnerText = [System.IO.Path]::GetFullPath($TargetPath)
+    $xml.Save($ProfilePath)
+}
+
+function Get-SuffixedPath {
+    param([string]$Path, [string]$Suffix)
+    $expandedPath = [Environment]::ExpandEnvironmentVariables($Path)
+    $parent = Split-Path -Parent $expandedPath
+    $leaf = Split-Path -Leaf $expandedPath
+    if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($leaf)) { throw "Chemin physique IIS invalide : $Path" }
+    return (Join-Path $parent "$leaf-$Suffix")
+}
+
+function Get-SuffixedHostName {
+    param([string]$HostName, [string]$Suffix)
+    if ([string]::IsNullOrWhiteSpace($HostName)) { return $HostName }
+    $labels = $HostName.Split('.', 2)
+    if ($labels.Count -eq 1) { return "$HostName-$Suffix" }
+    return "$($labels[0])-$Suffix.$($labels[1])"
+}
+
+function Get-SiteElement {
+    param([System.Xml.XmlDocument]$Document, [string]$SiteName)
+    foreach ($site in @($Document.SelectNodes("/configuration/system.applicationHost/sites/site"))) {
+        if ($site.GetAttribute("name") -eq $SiteName) { return $site }
+    }
+    return $null
+}
+
+function Copy-TemplateIisSite {
+    param([string]$TemplateSite, [string]$TargetSite, [string]$Suffix)
+    $applicationHostPath = Join-Path $env:windir "System32\inetsrv\config\applicationHost.config"
+    $originalContent = [System.IO.File]::ReadAllBytes($applicationHostPath)
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.PreserveWhitespace = $true
+    $xml.Load($applicationHostPath)
+
+    $template = Get-SiteElement -Document $xml -SiteName $TemplateSite
+    if (-not $template) { throw "Site IIS modèle introuvable : $TemplateSite" }
+    if (Get-SiteElement -Document $xml -SiteName $TargetSite) { throw "Le site IIS '$TargetSite' existe déjà." }
+
+    $sitesNode = $template.ParentNode
+    $clone = $template.CloneNode($true)
+    $clone.SetAttribute("name", $TargetSite)
+    $maxId = 0
+    foreach ($site in @($sitesNode.SelectNodes("site"))) {
+        $id = 0
+        if ([int]::TryParse($site.GetAttribute("id"), [ref]$id) -and $id -gt $maxId) { $maxId = $id }
+    }
+    $clone.SetAttribute("id", [string]($maxId + 1))
+
+    foreach ($virtualDirectory in @($clone.SelectNodes(".//*[local-name()='virtualDirectory']"))) {
+        if ($virtualDirectory.HasAttribute("physicalPath")) {
+            $newPath = Get-SuffixedPath -Path $virtualDirectory.GetAttribute("physicalPath") -Suffix $Suffix
+            $virtualDirectory.SetAttribute("physicalPath", $newPath)
+            if (-not (Test-Path -LiteralPath $newPath)) { New-Item -ItemType Directory -Path $newPath -Force | Out-Null }
+        }
+    }
+    foreach ($binding in @($clone.SelectNodes(".//*[local-name()='binding']"))) {
+        $bindingInformation = $binding.GetAttribute("bindingInformation")
+        $parts = $bindingInformation -split ':', 3
+        if ($parts.Count -eq 3) {
+            $parts[2] = Get-SuffixedHostName -HostName $parts[2] -Suffix $Suffix
+            $binding.SetAttribute("bindingInformation", ($parts -join ':'))
+        }
+    }
+    $null = $sitesNode.AppendChild($clone)
+
+    # Les réglages site-level sont stockés sous des nœuds <location>. Les recopier
+    # conserve notamment authentification, modules, rewrite et paramètres personnalisés.
+    $locations = @($xml.SelectNodes("/configuration/location"))
+    foreach ($location in $locations) {
+        $locationPath = $location.GetAttribute("path")
+        if ($locationPath -eq $TemplateSite -or $locationPath.StartsWith("$TemplateSite/")) {
+            $locationClone = $location.CloneNode($true)
+            $locationClone.SetAttribute("path", "$TargetSite$($locationPath.Substring($TemplateSite.Length))")
+            $null = $xml.DocumentElement.AppendChild($locationClone)
+        }
+    }
+
+    try {
+        $xml.Save($applicationHostPath)
+        if (-not (Get-Website -Name $TargetSite -ErrorAction SilentlyContinue)) { throw "IIS n'a pas chargé le site cloné '$TargetSite'." }
+    }
+    catch {
+        [System.IO.File]::WriteAllBytes($applicationHostPath, $originalContent)
+        throw
+    }
+}
+
+function Remove-IisLocationConfiguration {
+    param([string]$SiteName)
+    $applicationHostPath = Join-Path $env:windir "System32\inetsrv\config\applicationHost.config"
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.PreserveWhitespace = $true
+    $xml.Load($applicationHostPath)
+    $locations = @($xml.SelectNodes("/configuration/location"))
+    $removed = $false
+    foreach ($location in $locations) {
+        $locationPath = $location.GetAttribute("path")
+        if ($locationPath -eq $SiteName -or $locationPath.StartsWith("$SiteName/")) {
+            $null = $xml.DocumentElement.RemoveChild($location)
+            $removed = $true
+        }
+    }
+    if ($removed) { $xml.Save($applicationHostPath) }
+}
+
+function Get-TemplateHostNames {
+    param([string]$TemplateSite, [string]$Suffix)
+    $website = Get-Website -Name $TemplateSite -ErrorAction Stop
+    $hostNames = New-Object System.Collections.Generic.List[string]
+    foreach ($binding in @($website.bindings.Collection)) {
+        $parts = $binding.bindingInformation -split ':', 3
+        if ($parts.Count -eq 3 -and -not [string]::IsNullOrWhiteSpace($parts[2])) {
+            $hostNames.Add((Get-SuffixedHostName -HostName $parts[2] -Suffix $Suffix))
+        }
+    }
+    return @($hostNames | Sort-Object -Unique)
+}
+
+function Update-WorkspaceHostsFile {
+    param([string]$WorkspaceName, [string[]]$HostNames, [switch]$Remove)
+    $hostsPath = Join-Path $env:windir "System32\drivers\etc\hosts"
+    $marker = "# ws-tool:$WorkspaceName"
+    $lines = if (Test-Path -LiteralPath $hostsPath) { @([System.IO.File]::ReadAllLines($hostsPath)) } else { @() }
+    $keptLines = @($lines | Where-Object { $_ -notmatch [regex]::Escape($marker) })
+
+    if (-not $Remove -and $HostNames.Count -gt 0) {
+        $keptLines += ("127.0.0.1`t" + (($HostNames | Sort-Object -Unique) -join "`t") + "`t" + $marker)
+    }
+
+    [System.IO.File]::WriteAllLines($hostsPath, [string[]]$keptLines, (New-Object System.Text.UTF8Encoding($false)))
+    if ($Remove) { Write-Host "Entrée hosts supprimée : $marker" -ForegroundColor Green }
+    elseif ($HostNames.Count -gt 0) { Write-Host "Entrée hosts ajoutée : $($HostNames -join ', ')" -ForegroundColor Green }
+}
+
+if (-not (Test-Path -LiteralPath $WorkspaceConfig -PathType Leaf)) { throw "Configuration introuvable : $WorkspaceConfig" }
+if (-not (Test-Path -LiteralPath $RepositoryPath -PathType Container)) { throw "Repository introuvable : $RepositoryPath" }
+
+$config = Get-Content -LiteralPath $WorkspaceConfig -Raw | ConvertFrom-Json
+$repoProperty = $config.repos.PSObject.Properties[$RepositoryName]
+if (-not $repoProperty -or -not (Test-Property -Object $repoProperty.Value -Name "iis") -or -not $repoProperty.Value.iis) { throw "La section 'repos.$RepositoryName.iis' est absente de $WorkspaceConfig." }
+
+$repoIis = $repoProperty.Value.iis
+if (-not (Test-Property -Object $repoIis -Name "sites") -or -not $repoIis.sites) { throw "La propriété 'repos.$RepositoryName.iis.sites' est obligatoire." }
+
+Import-Module WebAdministration -ErrorAction Stop
+$workspaceHostNames = New-Object System.Collections.Generic.List[string]
+
+foreach ($site in @($repoIis.sites)) {
+    if (-not (Test-Property -Object $site -Name "name") -or -not $site.name) { throw "Chaque site IIS doit avoir une propriété 'name'." }
+    $siteName = "$WorkspaceName-$($site.name)"
+    if (-not (Test-Property -Object $site -Name "templateSite") -or -not $site.templateSite) { throw "Chaque site IIS doit définir un site modèle via 'templateSite'." }
+    $templateSite = [string]$site.templateSite
+    foreach ($hostName in @(Get-TemplateHostNames -TemplateSite $templateSite -Suffix $WorkspaceName)) { $workspaceHostNames.Add($hostName) }
+
+    if ($Remove) {
+        if (Get-Website -Name $siteName -ErrorAction SilentlyContinue) {
+            Remove-Website -Name $siteName
+            Remove-IisLocationConfiguration -SiteName $siteName
+            Write-Host "Site IIS supprimé : $siteName" -ForegroundColor Green
+        }
+    }
+    else {
+        if (-not (Get-Website -Name $siteName -ErrorAction SilentlyContinue)) {
+            Copy-TemplateIisSite -TemplateSite $templateSite -TargetSite $siteName -Suffix $WorkspaceName
+            Write-Host "Site IIS cloné : $templateSite -> $siteName" -ForegroundColor Green
+        }
+    }
+
+    if ((Test-Property -Object $site -Name "publishProfile") -and $site.publishProfile) {
+        $profileRelativePath = [string]$site.publishProfile
+        if ([System.IO.Path]::IsPathRooted($profileRelativePath)) { throw "publishProfile doit être relatif au repository : $profileRelativePath" }
+        $profilePath = Join-Path $RepositoryPath $profileRelativePath
+        if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) { throw "Profil de publication introuvable : $profilePath" }
+        if ($Remove) {
+            & git -C $RepositoryPath restore --worktree -- $profileRelativePath
+            if ($LASTEXITCODE -ne 0) { throw "Impossible de restaurer le profil de publication : $profileRelativePath" }
+            Write-Host "Profil restauré depuis Git : $profileRelativePath" -ForegroundColor Green
+        }
+        else {
+            $createdSite = Get-Website -Name $siteName -ErrorAction Stop
+            Set-PublishUrl -ProfilePath $profilePath -TargetPath $createdSite.physicalPath
+            Write-Host "Profil mis à jour : $profileRelativePath -> $($createdSite.physicalPath)" -ForegroundColor Green
+        }
+    }
+}
+
+Update-WorkspaceHostsFile -WorkspaceName $WorkspaceName -HostNames @($workspaceHostNames | Sort-Object -Unique) -Remove:$Remove
