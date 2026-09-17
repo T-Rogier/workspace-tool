@@ -52,7 +52,7 @@ function Get-SuffixedPath {
     $parent = Split-Path -Parent $expandedPath
     $leaf = Split-Path -Leaf $expandedPath
     if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($leaf)) { throw "Chemin physique IIS invalide : $Path" }
-    return (Join-Path $parent "$leaf-$Suffix")
+    return (Join-Path (Join-Path $parent $Suffix) $leaf)
 }
 
 function Get-SuffixedHostName {
