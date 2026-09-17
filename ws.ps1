@@ -9,12 +9,14 @@
     [Parameter(Position = 2, ValueFromRemainingArguments = $true)]
     [string[]]$Repositories,
 
+    [Alias("t")]
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
     [string]$BranchType = "feature",
 
     [Alias("o")]
     [switch]$OpenAfterCreate,
 
+    [Alias("d")]
     [switch]$DeleteBranches
 )
 
@@ -30,6 +32,15 @@ function Get-Config {
     if (-not $config.workspacesRoot) { throw "La propriété 'workspacesRoot' est obligatoire dans config.json." }
     if (-not $config.repos) { throw "La propriété 'repos' est obligatoire dans config.json." }
     return $config
+}
+
+function Assert-NoUnknownOptions {
+    param([string[]]$Arguments)
+    foreach ($argument in @($Arguments)) {
+        if ($argument.StartsWith("-")) {
+            throw "Paramètre inconnu : '$argument'. Paramètres disponibles : -BranchType (ou -t) <type>, -OpenAfterCreate (ou -o), -DeleteBranches (ou -d)."
+        }
+    }
 }
 
 function Get-RepoConfig {
@@ -492,24 +503,31 @@ function Remove-Workspace {
     }
 }
 
-$config = Get-Config
+try {
+    $config = Get-Config
+    Assert-NoUnknownOptions -Arguments $Repositories
 
-switch ($Command) {
-    "create" {
-        if (-not $WorkspaceName) { throw "Usage : ws create <workspace> <repo1> [repo2] [...] [-BranchType <type>]" }
-        New-Workspace -Config $config -Name $WorkspaceName -RepoNames $Repositories -BranchType $BranchType -OpenAfterCreate:$OpenAfterCreate
+    switch ($Command) {
+        "create" {
+            if (-not $WorkspaceName) { throw "Usage : ws create <workspace> <repo1> [repo2] [...] [-BranchType <type>]" }
+            New-Workspace -Config $config -Name $WorkspaceName -RepoNames $Repositories -BranchType $BranchType -OpenAfterCreate:$OpenAfterCreate
+        }
+        "open" {
+            if (-not $WorkspaceName) { throw "Usage : ws open <workspace>" }
+            Open-Workspace -Config $config -Name $WorkspaceName
+        }
+        "list" { Show-Workspaces -Config $config }
+        "status" {
+            if (-not $WorkspaceName) { throw "Usage : ws status <workspace>" }
+            Show-WorkspaceStatus -Config $config -Name $WorkspaceName
+        }
+        "remove" {
+            if (-not $WorkspaceName) { throw "Usage : ws remove <workspace> [-DeleteBranches]" }
+            Remove-Workspace -Config $config -Name $WorkspaceName -DeleteBranches:$DeleteBranches
+        }
     }
-    "open" {
-        if (-not $WorkspaceName) { throw "Usage : ws open <workspace>" }
-        Open-Workspace -Config $config -Name $WorkspaceName
-    }
-    "list" { Show-Workspaces -Config $config }
-    "status" {
-        if (-not $WorkspaceName) { throw "Usage : ws status <workspace>" }
-        Show-WorkspaceStatus -Config $config -Name $WorkspaceName
-    }
-    "remove" {
-        if (-not $WorkspaceName) { throw "Usage : ws remove <workspace> [-DeleteBranches]" }
-        Remove-Workspace -Config $config -Name $WorkspaceName -DeleteBranches:$DeleteBranches
-    }
+}
+catch {
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    exit 1
 }
