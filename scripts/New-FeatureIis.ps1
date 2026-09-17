@@ -179,6 +179,28 @@ function Update-WorkspaceHostsFile {
     elseif ($HostNames.Count -gt 0) { Write-Host "Entrée hosts ajoutée : $($HostNames -join ', ')" -ForegroundColor Green }
 }
 
+function Add-PublishProfileCommitWarning {
+    param([string]$RepositoryPath, [string]$RepositoryName)
+    $workspacePath = Split-Path -Parent $RepositoryPath
+    $agentsPath = Join-Path $workspacePath "AGENTS.md"
+    if (-not (Test-Path -LiteralPath $agentsPath -PathType Leaf)) { return }
+
+    $warning = "Ne jamais commit les modifications des profils de publication (.pubxml)."
+    $lines = @([System.IO.File]::ReadAllLines($agentsPath))
+    $repositoryPattern = "^\|\s*" + [regex]::Escape($RepositoryName) + "\s*\|"
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -notmatch $repositoryPattern -or $lines[$index].Contains($warning)) { continue }
+        $columns = $lines[$index].Split('|')
+        if ($columns.Count -lt 6) { continue }
+        $role = $columns[3].Trim()
+        $columns[3] = " $role - $warning "
+        $lines[$index] = $columns -join '|'
+        [System.IO.File]::WriteAllLines($agentsPath, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "AGENTS.md rule added for $RepositoryName." -ForegroundColor Green
+        return
+    }
+}
+
 if (-not (Test-Path -LiteralPath $WorkspaceConfig -PathType Leaf)) { throw "Configuration introuvable : $WorkspaceConfig" }
 if (-not (Test-Path -LiteralPath $RepositoryPath -PathType Container)) { throw "Repository introuvable : $RepositoryPath" }
 
@@ -217,7 +239,13 @@ foreach ($site in @($repoIis.sites)) {
         $profileRelativePath = [string]$site.publishProfile
         if ([System.IO.Path]::IsPathRooted($profileRelativePath)) { throw "publishProfile doit être relatif au repository : $profileRelativePath" }
         $profilePath = Join-Path $RepositoryPath $profileRelativePath
-        if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) { throw "Profil de publication introuvable : $profilePath" }
+        if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+            if ($Remove) {
+                Write-Host "Profil absent, restauration ignorée : $profileRelativePath" -ForegroundColor Yellow
+                continue
+            }
+            throw "Profil de publication introuvable : $profilePath"
+        }
         if ($Remove) {
             & git -C $RepositoryPath restore --worktree -- $profileRelativePath
             if ($LASTEXITCODE -ne 0) { throw "Impossible de restaurer le profil de publication : $profileRelativePath" }
@@ -232,3 +260,4 @@ foreach ($site in @($repoIis.sites)) {
 }
 
 Update-WorkspaceHostsFile -WorkspaceName $WorkspaceName -HostNames @($workspaceHostNames | Sort-Object -Unique) -Remove:$Remove
+if (-not $Remove) { Add-PublishProfileCommitWarning -RepositoryPath $RepositoryPath -RepositoryName $RepositoryName }

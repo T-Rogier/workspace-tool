@@ -151,6 +151,8 @@ Chaque entrée de `iis.sites` doit définir `templateSite`, le nom du site IIS l
 
 Les noms d'hôte clonés sont ajoutés au fichier Windows `hosts` sous une entrée marquée `# ws-tool:<workspace>` et pointent vers `127.0.0.1`. Le hook `postDelete` retire uniquement cette entrée, sans modifier les autres lignes du fichier.
 
+Après la création, le script IIS ajoute également au `AGENTS.md` du workspace une règle dans la description du repository concerné : ne jamais commiter les modifications des profils de publication (`.pubxml`).
+
 La création et la suppression de sites IIS requièrent une console PowerShell lancée en administrateur. Au retrait du workspace, le script IIS supprime les sites et restaure les `publishProfile` avec `git restore` avant que `ws` ne supprime le worktree.
 
 ## Ouvrir

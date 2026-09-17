@@ -67,7 +67,30 @@ function Invoke-RepositoryHook {
         $arguments = @($hook.arguments | ForEach-Object { Expand-WorkspaceTemplate -Value ([string]$_) -Variables $Variables })
     }
     Write-Host "Exécution $HookName : $scriptPath $($arguments -join ' ')" -ForegroundColor Cyan
-    & $scriptPath @arguments
+
+    # PowerShell does not reinterpret strings from an array as named parameters
+    # when calling a script. Convert the JSON argument convention (-Name value)
+    # into a proper splatted hashtable so hook scripts receive their parameters.
+    $namedArguments = @{}
+    $positionalArguments = @()
+    for ($index = 0; $index -lt $arguments.Count; $index++) {
+        $argument = [string]$arguments[$index]
+        if ($argument.StartsWith("-") -and $argument.Length -gt 1) {
+            $parameterName = $argument.TrimStart("-")
+            if ($index + 1 -lt $arguments.Count -and -not ([string]$arguments[$index + 1]).StartsWith("-")) {
+                $namedArguments[$parameterName] = $arguments[$index + 1]
+                $index++
+            }
+            else {
+                $namedArguments[$parameterName] = $true
+            }
+        }
+        else {
+            $positionalArguments += $argument
+        }
+    }
+    $global:LASTEXITCODE = 0
+    & $scriptPath @namedArguments @positionalArguments
     if ($LASTEXITCODE -ne 0) { throw "Le script $HookName du repository '$RepoName' a échoué (code $LASTEXITCODE)." }
 }
 
@@ -130,6 +153,22 @@ function Get-WorkspaceRepos {
     if (-not (Test-Path $manifestPath)) { return @() }
     $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
     return @($manifest.repositories)
+}
+
+function Remove-WorkspaceDirectory {
+    param([string]$WorkspacePath)
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        try {
+            if (Test-Path $WorkspacePath) { Remove-Item $WorkspacePath -Recurse -Force }
+            return
+        }
+        catch {
+            $lastError = $_
+            if ($attempt -lt 10) { Start-Sleep -Milliseconds 500 }
+        }
+    }
+    throw $lastError
 }
 
 function Write-WorkspaceManifest {
@@ -248,16 +287,6 @@ function New-Workspace {
             $dependsOn = @()
             if ($repoConfig.PSObject.Properties.Name -contains "dependsOn" -and $repoConfig.dependsOn) { $dependsOn = @($repoConfig.dependsOn) }
 
-            $templateVariables = [PSCustomObject]@{
-                workspaceName = $Name
-                branchName = $branchName
-                repoName = $repoName
-                worktreePath = $worktreePath
-                configPath = $ConfigPath
-                toolPath = $ScriptRoot
-            }
-            Invoke-RepositoryHook -RepoConfig $repoConfig -HookName "postCreate" -Variables $templateVariables -WorktreePath $worktreePath -RepoName $repoName
-
             $repoEntries += [PSCustomObject]@{
                 name = $repoName
                 path = $repoPath
@@ -271,6 +300,22 @@ function New-Workspace {
 
         Write-WorkspaceManifest -WorkspacePath $workspacePath -WorkspaceName $Name -BranchName $branchName -BranchType $BranchType -RepoEntries $repoEntries
         Write-AgentsFile -WorkspacePath $workspacePath -WorkspaceName $Name -RepoEntries $repoEntries
+
+        # Hooks run after the workspace metadata is generated, so a repository
+        # script can enrich AGENTS.md without its changes being overwritten.
+        foreach ($repo in $repoEntries) {
+            $repoConfig = Get-RepoConfig -Config $Config -RepoName $repo.name
+            $templateVariables = [PSCustomObject]@{
+                workspaceName = $Name
+                branchName = $branchName
+                repoName = $repo.name
+                worktreePath = $repo.worktreePath
+                workspacePath = $workspacePath
+                configPath = $ConfigPath
+                toolPath = $ScriptRoot
+            }
+            Invoke-RepositoryHook -RepoConfig $repoConfig -HookName "postCreate" -Variables $templateVariables -WorktreePath $repo.worktreePath -RepoName $repo.name
+        }
 
         Write-Host ""
         Write-Host "Workspace créé :" -ForegroundColor Green
@@ -374,7 +419,22 @@ function Remove-Workspace {
     $workspacePath = Get-WorkspacePath -Config $Config -Name $Name
     if (-not (Test-Path $workspacePath)) { throw "Workspace introuvable : $Name" }
     $repos = @(Get-WorkspaceRepos -WorkspacePath $workspacePath)
-    if ($repos.Count -eq 0) { throw "Impossible de supprimer proprement le workspace : manifest .workspace.json introuvable." }
+    if ($repos.Count -eq 0) {
+        # A previous removal can finish all Git operations yet fail only while
+        # deleting the root directory because Windows still has it locked.
+        # Permit a later retry when no worktree marker remains, without rerunning
+        # lifecycle hooks or attempting to delete branches a second time.
+        $gitMarkers = @(Get-ChildItem -Path $workspacePath -Force -Recurse -Filter ".git" -ErrorAction SilentlyContinue)
+        if ($gitMarkers.Count -gt 0) { throw "Impossible de supprimer proprement le workspace : manifest .workspace.json introuvable et worktree(s) encore présent(s)." }
+        try {
+            Remove-WorkspaceDirectory -WorkspacePath $workspacePath
+            Write-Host "Résidu du workspace '$Name' supprimé." -ForegroundColor Green
+            return
+        }
+        catch {
+            throw "Les worktrees et branches ont déjà été traités, mais le dossier '$workspacePath' est encore utilisé par un processus. Ferme l'Explorateur, un terminal ou un IDE ouvert sur ce dossier puis relance : ws remove $Name"
+        }
+    }
 
     foreach ($repo in $repos) {
         $worktreePath = Join-Path $workspacePath $repo.name
@@ -417,7 +477,12 @@ function Remove-Workspace {
         }
     }
 
-    if (Test-Path $workspacePath) { Remove-Item $workspacePath -Recurse -Force }
+    if (Test-Path $workspacePath) {
+        try { Remove-WorkspaceDirectory -WorkspacePath $workspacePath }
+        catch {
+            throw "Les worktrees et branches ont été supprimés, mais le dossier '$workspacePath' est encore utilisé par un processus. Ferme l'Explorateur, un terminal ou un IDE ouvert sur ce dossier puis relance : ws remove $Name"
+        }
+    }
     Write-Host "Workspace '$Name' supprimé." -ForegroundColor Green
     if ($DeleteBranches) {
         Write-Host "Les branches Git locales associées ont été supprimées."
