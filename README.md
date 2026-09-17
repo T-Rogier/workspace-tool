@@ -117,6 +117,12 @@ Exemple de script exécuté après création du worktree :
 
 Un `postDelete` se déclare de la même façon et s'exécute avant le retrait Git du worktree. Les arguments de type `-Nom valeur` sont transmis comme paramètres PowerShell nommés au script.
 
+### Script IIS DM
+
+La branche `dm-deployement` fournit `scripts\New-FeatureIis.ps1`, un script spécifique à l'environnement Dijon Métropole. Déclaré en `postCreate`, il clone les sites IIS modèles configurés pour le repository : configuration IIS, pool applicatif, bindings HTTPS et certificats. Il crée un dossier de publication par workspace et par site, ajoute les noms d'hôte locaux au fichier Windows `hosts`, puis redirige les profils `.pubxml` du worktree vers ces dossiers.
+
+Déclaré en `postDelete` avec l'argument `-Remove`, il supprime les sites clonés et leurs entrées `hosts`, puis restaure les profils de publication depuis Git. Il doit être exécuté depuis une console PowerShell administrateur. Ce script ne fait pas partie de `main`.
+
 ## Ouvrir
 
 ```powershell
