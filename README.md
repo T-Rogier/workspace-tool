@@ -63,6 +63,13 @@ Ajoute `-o` pour ouvrir automatiquement le workspace après sa création :
 ws create feature-auth frontend backend -o
 ```
 
+Les alias courts sont : `-t` pour `-BranchType`, `-o` pour `-OpenAfterCreate` et `-d` pour `-DeleteBranches`.
+
+```powershell
+ws create correction-login frontend -t fix
+ws remove correction-login -d
+```
+
 Crée :
 
 ```text
@@ -91,7 +98,24 @@ ws create guide-installation frontend -BranchType docs
 Cela crée respectivement les branches `fix/correction-login` et `docs/guide-installation`.
 Sans `-BranchType`, le type par défaut est `feature` : `feature/<workspace>`.
 
+Un paramètre inconnu commençant par `-` produit une erreur explicite.
+
 Si la branche existe déjà dans un repo, elle est réutilisée.
+
+## Scripts post-création
+
+`ws` reste neutre : il crée les worktrees puis exécute les scripts déclarés dans `postCreate` et `postDelete`. Les variables disponibles sont `{workspaceName}`, `{branchName}`, `{repoName}`, `{worktreePath}`, `{workspacePath}`, `{configPath}` et `{toolPath}`.
+
+Exemple de script exécuté après création du worktree :
+
+```json
+"postCreate": {
+  "script": "scripts\\prepare-local.ps1",
+  "arguments": ["-Workspace", "{workspaceName}"]
+}
+```
+
+Un `postDelete` se déclare de la même façon et s'exécute avant le retrait Git du worktree. Les arguments de type `-Nom valeur` sont transmis comme paramètres PowerShell nommés au script.
 
 ## Ouvrir
 
@@ -144,6 +168,12 @@ Pour supprimer également les branches locales associées au workspace :
 
 ```powershell
 ws remove feature-auth -DeleteBranches
+```
+
+Ou avec son alias :
+
+```powershell
+ws remove feature-auth -d
 ```
 
 Git refuse cette suppression si une branche contient des commits non fusionnés. Les branches distantes ne sont jamais supprimées.

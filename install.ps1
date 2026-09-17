@@ -15,6 +15,19 @@ $scriptDestination = Join-Path $InstallDir "ws.ps1"
 $scriptContent = [System.IO.File]::ReadAllText($scriptSource)
 [System.IO.File]::WriteAllText($scriptDestination, $scriptContent, $utf8WithBom)
 
+$scriptsSource = Join-Path $PSScriptRoot "scripts"
+if (Test-Path $scriptsSource) {
+    $scriptsDestination = Join-Path $InstallDir "scripts"
+    New-Item -ItemType Directory -Path $scriptsDestination -Force | Out-Null
+    Copy-Item -Path (Join-Path $scriptsSource "*") -Destination $scriptsDestination -Force
+    Get-ChildItem -Path $scriptsSource -Filter "*.ps1" -File -Recurse | ForEach-Object {
+        $relativePath = $_.FullName.Substring($scriptsSource.Length).TrimStart('\')
+        $destination = Join-Path $scriptsDestination $relativePath
+        $content = [System.IO.File]::ReadAllText($_.FullName)
+        [System.IO.File]::WriteAllText($destination, $content, $utf8WithBom)
+    }
+}
+
 $configDestination = Join-Path $InstallDir "config.json"
 if (-not (Test-Path $configDestination)) {
     $legacyConfigPath = Join-Path $InstallDir "repos.json"

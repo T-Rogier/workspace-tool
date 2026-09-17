@@ -9,12 +9,14 @@
     [Parameter(Position = 2, ValueFromRemainingArguments = $true)]
     [string[]]$Repositories,
 
+    [Alias("t")]
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
     [string]$BranchType = "feature",
 
     [Alias("o")]
     [switch]$OpenAfterCreate,
 
+    [Alias("d")]
     [switch]$DeleteBranches
 )
 
@@ -32,6 +34,15 @@ function Get-Config {
     return $config
 }
 
+function Assert-NoUnknownOptions {
+    param([string[]]$Arguments)
+    foreach ($argument in @($Arguments)) {
+        if ($argument.StartsWith("-")) {
+            throw "Paramètre inconnu : '$argument'. Paramètres disponibles : -BranchType (ou -t) <type>, -OpenAfterCreate (ou -o), -DeleteBranches (ou -d)."
+        }
+    }
+}
+
 function Get-RepoConfig {
     param($Config, [string]$RepoName)
     $repo = $Config.repos.PSObject.Properties[$RepoName]
@@ -43,6 +54,55 @@ function Get-RepoConfig {
     if (-not $repoConfig.path) { throw "Le repository '$RepoName' n'a pas de propriété 'path'." }
     if (-not $repoConfig.defaultBranch) { throw "Le repository '$RepoName' n'a pas de propriété 'defaultBranch'." }
     return $repoConfig
+}
+
+function Expand-WorkspaceTemplate {
+    param([string]$Value, $Variables)
+    if ($null -eq $Value) { return $null }
+    foreach ($property in $Variables.PSObject.Properties) {
+        $Value = $Value.Replace("{$($property.Name)}", [string]$property.Value)
+    }
+    return $Value
+}
+
+function Invoke-RepositoryHook {
+    param($RepoConfig, [string]$HookName, $Variables, [string]$WorktreePath, [string]$RepoName)
+    if (-not ($RepoConfig.PSObject.Properties.Name -contains $HookName) -or -not $RepoConfig.$HookName) { return }
+    $hook = $RepoConfig.$HookName
+    if (-not ($hook.PSObject.Properties.Name -contains "script") -or -not $hook.script) { throw "Le repository '$RepoName' a un $HookName sans propriété 'script'." }
+    $scriptPath = Expand-WorkspaceTemplate -Value ([string]$hook.script) -Variables $Variables
+    if (-not [System.IO.Path]::IsPathRooted($scriptPath)) { $scriptPath = Join-Path $WorktreePath $scriptPath }
+    if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw "Script postCreate introuvable pour '$RepoName' : $scriptPath" }
+    $arguments = @()
+    if (($hook.PSObject.Properties.Name -contains "arguments") -and $hook.arguments) {
+        $arguments = @($hook.arguments | ForEach-Object { Expand-WorkspaceTemplate -Value ([string]$_) -Variables $Variables })
+    }
+    Write-Host "Exécution $HookName : $scriptPath $($arguments -join ' ')" -ForegroundColor Cyan
+
+    # PowerShell does not reinterpret strings from an array as named parameters
+    # when calling a script. Convert the JSON argument convention (-Name value)
+    # into a proper splatted hashtable so hook scripts receive their parameters.
+    $namedArguments = @{}
+    $positionalArguments = @()
+    for ($index = 0; $index -lt $arguments.Count; $index++) {
+        $argument = [string]$arguments[$index]
+        if ($argument.StartsWith("-") -and $argument.Length -gt 1) {
+            $parameterName = $argument.TrimStart("-")
+            if ($index + 1 -lt $arguments.Count -and -not ([string]$arguments[$index + 1]).StartsWith("-")) {
+                $namedArguments[$parameterName] = $arguments[$index + 1]
+                $index++
+            }
+            else {
+                $namedArguments[$parameterName] = $true
+            }
+        }
+        else {
+            $positionalArguments += $argument
+        }
+    }
+    $global:LASTEXITCODE = 0
+    & $scriptPath @namedArguments @positionalArguments
+    if ($LASTEXITCODE -ne 0) { throw "Le script $HookName du repository '$RepoName' a échoué (code $LASTEXITCODE)." }
 }
 
 function Assert-GitRepo {
@@ -104,6 +164,22 @@ function Get-WorkspaceRepos {
     if (-not (Test-Path $manifestPath)) { return @() }
     $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
     return @($manifest.repositories)
+}
+
+function Remove-WorkspaceDirectory {
+    param([string]$WorkspacePath)
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        try {
+            if (Test-Path $WorkspacePath) { Remove-Item $WorkspacePath -Recurse -Force }
+            return
+        }
+        catch {
+            $lastError = $_
+            if ($attempt -lt 10) { Start-Sleep -Milliseconds 500 }
+        }
+    }
+    throw $lastError
 }
 
 function Write-WorkspaceManifest {
@@ -236,6 +312,22 @@ function New-Workspace {
         Write-WorkspaceManifest -WorkspacePath $workspacePath -WorkspaceName $Name -BranchName $branchName -BranchType $BranchType -RepoEntries $repoEntries
         Write-AgentsFile -WorkspacePath $workspacePath -WorkspaceName $Name -RepoEntries $repoEntries
 
+        # Hooks run after the workspace metadata is generated, so a repository
+        # script can enrich AGENTS.md without its changes being overwritten.
+        foreach ($repo in $repoEntries) {
+            $repoConfig = Get-RepoConfig -Config $Config -RepoName $repo.name
+            $templateVariables = [PSCustomObject]@{
+                workspaceName = $Name
+                branchName = $branchName
+                repoName = $repo.name
+                worktreePath = $repo.worktreePath
+                workspacePath = $workspacePath
+                configPath = $ConfigPath
+                toolPath = $ScriptRoot
+            }
+            Invoke-RepositoryHook -RepoConfig $repoConfig -HookName "postCreate" -Variables $templateVariables -WorktreePath $repo.worktreePath -RepoName $repo.name
+        }
+
         Write-Host ""
         Write-Host "Workspace créé :" -ForegroundColor Green
         Write-Host "  $workspacePath"
@@ -338,7 +430,38 @@ function Remove-Workspace {
     $workspacePath = Get-WorkspacePath -Config $Config -Name $Name
     if (-not (Test-Path $workspacePath)) { throw "Workspace introuvable : $Name" }
     $repos = @(Get-WorkspaceRepos -WorkspacePath $workspacePath)
-    if ($repos.Count -eq 0) { throw "Impossible de supprimer proprement le workspace : manifest .workspace.json introuvable." }
+    if ($repos.Count -eq 0) {
+        # A previous removal can finish all Git operations yet fail only while
+        # deleting the root directory because Windows still has it locked.
+        # Permit a later retry when no worktree marker remains, without rerunning
+        # lifecycle hooks or attempting to delete branches a second time.
+        $gitMarkers = @(Get-ChildItem -Path $workspacePath -Force -Recurse -Filter ".git" -ErrorAction SilentlyContinue)
+        if ($gitMarkers.Count -gt 0) { throw "Impossible de supprimer proprement le workspace : manifest .workspace.json introuvable et worktree(s) encore présent(s)." }
+        try {
+            Remove-WorkspaceDirectory -WorkspacePath $workspacePath
+            Write-Host "Résidu du workspace '$Name' supprimé." -ForegroundColor Green
+            return
+        }
+        catch {
+            throw "Les worktrees et branches ont déjà été traités, mais le dossier '$workspacePath' est encore utilisé par un processus. Ferme l'Explorateur, un terminal ou un IDE ouvert sur ce dossier puis relance : ws remove $Name"
+        }
+    }
+
+    foreach ($repo in $repos) {
+        $worktreePath = Join-Path $workspacePath $repo.name
+        if (-not (Test-Path $worktreePath)) { continue }
+        $repoConfig = Get-RepoConfig -Config $Config -RepoName $repo.name
+        $templateVariables = [PSCustomObject]@{
+            workspaceName = $Name
+            branchName = $repo.branch
+            repoName = $repo.name
+            worktreePath = $worktreePath
+            workspacePath = $workspacePath
+            configPath = $ConfigPath
+            toolPath = $ScriptRoot
+        }
+        Invoke-RepositoryHook -RepoConfig $repoConfig -HookName "postDelete" -Variables $templateVariables -WorktreePath $worktreePath -RepoName $repo.name
+    }
 
     foreach ($repo in $repos) {
         $worktreePath = Join-Path $workspacePath $repo.name
@@ -365,7 +488,12 @@ function Remove-Workspace {
         }
     }
 
-    if (Test-Path $workspacePath) { Remove-Item $workspacePath -Recurse -Force }
+    if (Test-Path $workspacePath) {
+        try { Remove-WorkspaceDirectory -WorkspacePath $workspacePath }
+        catch {
+            throw "Les worktrees et branches ont été supprimés, mais le dossier '$workspacePath' est encore utilisé par un processus. Ferme l'Explorateur, un terminal ou un IDE ouvert sur ce dossier puis relance : ws remove $Name"
+        }
+    }
     Write-Host "Workspace '$Name' supprimé." -ForegroundColor Green
     if ($DeleteBranches) {
         Write-Host "Les branches Git locales associées ont été supprimées."
@@ -375,24 +503,31 @@ function Remove-Workspace {
     }
 }
 
-$config = Get-Config
+try {
+    $config = Get-Config
+    Assert-NoUnknownOptions -Arguments $Repositories
 
-switch ($Command) {
-    "create" {
-        if (-not $WorkspaceName) { throw "Usage : ws create <workspace> <repo1> [repo2] [...] [-BranchType <type>]" }
-        New-Workspace -Config $config -Name $WorkspaceName -RepoNames $Repositories -BranchType $BranchType -OpenAfterCreate:$OpenAfterCreate
+    switch ($Command) {
+        "create" {
+            if (-not $WorkspaceName) { throw "Usage : ws create <workspace> <repo1> [repo2] [...] [-BranchType <type>]" }
+            New-Workspace -Config $config -Name $WorkspaceName -RepoNames $Repositories -BranchType $BranchType -OpenAfterCreate:$OpenAfterCreate
+        }
+        "open" {
+            if (-not $WorkspaceName) { throw "Usage : ws open <workspace>" }
+            Open-Workspace -Config $config -Name $WorkspaceName
+        }
+        "list" { Show-Workspaces -Config $config }
+        "status" {
+            if (-not $WorkspaceName) { throw "Usage : ws status <workspace>" }
+            Show-WorkspaceStatus -Config $config -Name $WorkspaceName
+        }
+        "remove" {
+            if (-not $WorkspaceName) { throw "Usage : ws remove <workspace> [-DeleteBranches]" }
+            Remove-Workspace -Config $config -Name $WorkspaceName -DeleteBranches:$DeleteBranches
+        }
     }
-    "open" {
-        if (-not $WorkspaceName) { throw "Usage : ws open <workspace>" }
-        Open-Workspace -Config $config -Name $WorkspaceName
-    }
-    "list" { Show-Workspaces -Config $config }
-    "status" {
-        if (-not $WorkspaceName) { throw "Usage : ws status <workspace>" }
-        Show-WorkspaceStatus -Config $config -Name $WorkspaceName
-    }
-    "remove" {
-        if (-not $WorkspaceName) { throw "Usage : ws remove <workspace> [-DeleteBranches]" }
-        Remove-Workspace -Config $config -Name $WorkspaceName -DeleteBranches:$DeleteBranches
-    }
+}
+catch {
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    exit 1
 }
