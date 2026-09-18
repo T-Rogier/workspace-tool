@@ -125,7 +125,7 @@ Déclaré en `postDelete` avec l'argument `-Remove`, il supprime les sites clon�
 
 ### Déploiement local du CDN DM
 
-La branche `dm-deployement` fournit aussi `scripts\Set-FeatureCdnDeployment.ps1`. Déclaré pour `frontend-platform` en `postCreate`, il crée `tools\deploy-cdn-local.local.json` et y définit la destination `C:\inetpub\wwwroot\<workspace>\dev-cdn`, le dossier du site IIS `dev-cdn` de la même feature. Ce fichier local est ignoré par Git. Le script copie aussi les fichiers globaux `components\.env.<environnement>` ignorés par Git depuis le dossier local indiqué par `-LocalRepositoryPath`, puis lance `pnpm env:generate` pour chacun. Avec `-Remove` en `postDelete`, la configuration CDN est supprimée avant le retrait du worktree.
+La branche `dm-deployement` fournit aussi `scripts\Set-FeatureCdnDeployment.ps1`. Déclaré pour `frontend-platform` en `postCreate`, il crée `tools\deploy-cdn-local.local.json` et y définit la destination `C:\inetpub\wwwroot\<workspace>\dev-cdn`, le dossier du site IIS `dev-cdn` de la même feature. Ce fichier local est ignoré par Git. Le script copie aussi `components\.env.dev` ignoré par Git depuis le dossier local indiqué par `-LocalRepositoryPath`, puis lance `pnpm env:generate -- dev`. Avec `-Remove` en `postDelete`, la configuration CDN est supprimée avant le retrait du worktree.
 
 ## Ouvrir
 

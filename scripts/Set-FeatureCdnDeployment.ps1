@@ -13,7 +13,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Copy-RootEnvironmentFiles {
+function Copy-DevelopmentEnvironment {
     param([string]$SourceRepositoryPath, [string]$TargetRepositoryPath)
 
     $sourceComponentsPath = Join-Path $SourceRepositoryPath "components"
@@ -21,28 +21,25 @@ function Copy-RootEnvironmentFiles {
     if (-not (Test-Path -LiteralPath $sourceComponentsPath -PathType Container)) {
         throw "Dossier d'environnements local introuvable : $sourceComponentsPath"
     }
-    $environmentFiles = @(
-        Get-ChildItem -LiteralPath $sourceComponentsPath -File -Filter ".env.*" |
-            Where-Object { $_.Name -notlike "*.example" }
-    )
-
-    foreach ($environmentFile in $environmentFiles) {
-        Copy-Item -LiteralPath $environmentFile.FullName -Destination (Join-Path $targetComponentsPath $environmentFile.Name) -Force
-        $environment = $environmentFile.Name.Substring(".env.".Length)
-
-        Push-Location $TargetRepositoryPath
-        try {
-            & pnpm env:generate -- $environment
-            if ($LASTEXITCODE -ne 0) {
-                throw "La generation des environnements a echoue pour : $environment"
-            }
-        }
-        finally {
-            Pop-Location
-        }
-
-        Write-Host "Environnement copie et genere : components\\$($environmentFile.Name)" -ForegroundColor Green
+    $environmentFile = Join-Path $sourceComponentsPath ".env.dev"
+    if (-not (Test-Path -LiteralPath $environmentFile -PathType Leaf)) {
+        throw "Fichier d'environnement local introuvable : $environmentFile"
     }
+
+    Copy-Item -LiteralPath $environmentFile -Destination (Join-Path $targetComponentsPath ".env.dev") -Force
+
+    Push-Location $TargetRepositoryPath
+    try {
+        & pnpm env:generate -- dev
+        if ($LASTEXITCODE -ne 0) {
+            throw "La generation des environnements a echoue pour : dev"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    Write-Host "Environnement copie et genere : components\\.env.dev" -ForegroundColor Green
 }
 
 $relativeConfigPath = "tools\deploy-cdn-local.local.json"
@@ -67,4 +64,4 @@ if ([string]::IsNullOrWhiteSpace($LocalRepositoryPath)) {
     throw "Le parametre -LocalRepositoryPath est requis pour copier les environnements locaux."
 }
 
-Copy-RootEnvironmentFiles -SourceRepositoryPath $LocalRepositoryPath -TargetRepositoryPath $RepositoryPath
+Copy-DevelopmentEnvironment -SourceRepositoryPath $LocalRepositoryPath -TargetRepositoryPath $RepositoryPath
