@@ -213,16 +213,27 @@ if (-not (Test-Property -Object $repoIis -Name "sites") -or -not $repoIis.sites)
 
 Import-Module WebAdministration -ErrorAction Stop
 $workspaceHostNames = New-Object System.Collections.Generic.List[string]
+$publishDirectories = New-Object System.Collections.Generic.List[string]
 
 foreach ($site in @($repoIis.sites)) {
     if (-not (Test-Property -Object $site -Name "name") -or -not $site.name) { throw "Chaque site IIS doit avoir une propriété 'name'." }
     $siteName = "$WorkspaceName-$($site.name)"
     if (-not (Test-Property -Object $site -Name "templateSite") -or -not $site.templateSite) { throw "Chaque site IIS doit définir un site modèle via 'templateSite'." }
     $templateSite = [string]$site.templateSite
+    $templateWebsite = Get-Website -Name $templateSite -ErrorAction Stop
     foreach ($hostName in @(Get-TemplateHostNames -TemplateSite $templateSite -Suffix $WorkspaceName)) { $workspaceHostNames.Add($hostName) }
 
     if ($Remove) {
-        if (Get-Website -Name $siteName -ErrorAction SilentlyContinue) {
+        $createdWebsite = Get-Website -Name $siteName -ErrorAction SilentlyContinue
+        if ($createdWebsite) {
+            $expectedPublishPath = Get-SuffixedPath -Path $templateWebsite.physicalPath -Suffix $WorkspaceName
+            $actualPublishPath = [System.IO.Path]::GetFullPath($createdWebsite.physicalPath)
+            if ($actualPublishPath -ieq [System.IO.Path]::GetFullPath($expectedPublishPath)) {
+                $publishDirectories.Add($actualPublishPath)
+            }
+            else {
+                Write-Warning "Le chemin du site '$siteName' diffère du chemin créé par ws ; il ne sera pas supprimé : $actualPublishPath"
+            }
             Remove-Website -Name $siteName
             Remove-IisLocationConfiguration -SiteName $siteName
             Write-Host "Site IIS supprimé : $siteName" -ForegroundColor Green
@@ -260,4 +271,18 @@ foreach ($site in @($repoIis.sites)) {
 }
 
 Update-WorkspaceHostsFile -WorkspaceName $WorkspaceName -HostNames @($workspaceHostNames | Sort-Object -Unique) -Remove:$Remove
+if ($Remove) {
+    foreach ($publishDirectory in @($publishDirectories | Sort-Object -Unique)) {
+        if (Test-Path -LiteralPath $publishDirectory) {
+            Remove-Item -LiteralPath $publishDirectory -Recurse -Force
+            Write-Host "Dossier de publication supprimé : $publishDirectory" -ForegroundColor Green
+        }
+    }
+    foreach ($workspacePublishDirectory in @($publishDirectories | ForEach-Object { Split-Path -Parent $_ } | Sort-Object -Unique)) {
+        if ((Test-Path -LiteralPath $workspacePublishDirectory) -and -not (Get-ChildItem -LiteralPath $workspacePublishDirectory -Force | Select-Object -First 1)) {
+            Remove-Item -LiteralPath $workspacePublishDirectory -Force
+            Write-Host "Dossier de publication du workspace supprimé : $workspacePublishDirectory" -ForegroundColor Green
+        }
+    }
+}
 if (-not $Remove) { Add-PublishProfileCommitWarning -RepositoryPath $RepositoryPath -RepositoryName $RepositoryName }
