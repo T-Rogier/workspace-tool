@@ -285,13 +285,18 @@ function New-Workspace {
             # Updating refs is required before creating the worktree, but pruning
             # unrelated deleted branches must not prevent workspace creation.
             Invoke-Git -RepoPath $repoPath -Arguments @("fetch", "--all")
+            $baseBranch = "origin/$($repoConfig.defaultBranch)"
+            & git -C $repoPath rev-parse --verify --quiet "refs/remotes/$baseBranch" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Branche distante introuvable : $baseBranch"
+            }
 
             if (Test-BranchExists -RepoPath $repoPath -BranchName $branchName) {
                 Write-Host "La branche existe déjà, réutilisation." -ForegroundColor Yellow
                 Invoke-Git -RepoPath $repoPath -Arguments @("worktree", "add", $worktreePath, $branchName)
             }
             else {
-                Invoke-Git -RepoPath $repoPath -Arguments @("worktree", "add", "-b", $branchName, $worktreePath, $repoConfig.defaultBranch)
+                Invoke-Git -RepoPath $repoPath -Arguments @("worktree", "add", "-b", $branchName, $worktreePath, $baseBranch)
             }
 
             $createdWorktrees.Add([PSCustomObject]@{ RepoPath = $repoPath; WorktreePath = $worktreePath })
