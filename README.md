@@ -123,6 +123,10 @@ La branche `dm-deployement` fournit `scripts\New-FeatureIis.ps1`, un script spé
 
 Déclaré en `postDelete` avec l'argument `-Remove`, il supprime les sites clonés, leurs dossiers de publication et leurs entrées `hosts`, puis restaure les profils de publication depuis Git. Il doit être exécuté depuis une console PowerShell administrateur. Ce script ne fait pas partie de `main`.
 
+### Déploiement local du CDN DM
+
+La branche `dm-deployement` fournit aussi `scripts\Set-FeatureCdnDeployment.ps1`. Déclaré pour `frontend-platform` en `postCreate`, il crée `tools\deploy-cdn-local.local.json` et y définit la destination `C:\inetpub\wwwroot\<workspace>\dev-cdn`, le dossier du site IIS `dev-cdn` de la même feature. Ce fichier local est ignoré par Git. Avec `-Remove` en `postDelete`, il est supprimé avant le retrait du worktree.
+
 ## Ouvrir
 
 ```powershell
